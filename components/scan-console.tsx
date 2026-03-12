@@ -386,7 +386,9 @@ export function ScanConsole() {
                           <StatusPill status={item.status} />
                         </td>
                         <td className="px-3 py-2 text-xs text-muted">
-                          {item.result?.detections.filter((d) => d.status !== "not_found").length ?? 0} detectadas
+                          {item.status === "running" || item.status === "pending"
+                            ? `tentativa ${item.attempts}/${item.maxAttempts}`
+                            : `${item.result?.detections.filter((d) => d.status !== "not_found").length ?? 0} detectadas`}
                         </td>
                       </tr>
                     ))}
@@ -405,6 +407,25 @@ export function ScanConsole() {
 
           {selectedItem.error && (
             <p className="mt-3 rounded-lg bg-rose-100 px-3 py-2 text-sm text-rose-700">{selectedItem.error}</p>
+          )}
+
+          {(selectedItem.status === "running" || selectedItem.status === "pending") && (
+            <div className="mt-4 rounded-2xl border border-ink/10 bg-white p-4">
+              <div className="flex items-center gap-3">
+                <span className="h-3 w-3 animate-pulse rounded-full bg-accent" />
+                <p className="text-sm font-semibold text-ink">
+                  {selectedItem.status === "running"
+                    ? "Analisando esta URL agora"
+                    : "URL aguardando na fila"}
+                </p>
+              </div>
+              <p className="mt-2 text-xs text-muted">
+                Tentativa {selectedItem.attempts}/{selectedItem.maxAttempts}
+                {selectedItem.nextRetryAt
+                  ? ` • próximo retry em ${new Date(selectedItem.nextRetryAt).toLocaleTimeString("pt-BR")}`
+                  : ""}
+              </p>
+            </div>
           )}
 
           <div className="mt-4 grid gap-3 md:grid-cols-2">

@@ -2,7 +2,19 @@ import { scanWebsite } from "@/lib/scan-engine";
 import type { AnalysisMode, ScanJob, ScanItem } from "@/lib/types";
 import { normalizeUrl, toSlug } from "@/lib/utils";
 
-const CONCURRENCY = 4;
+const CONCURRENCY = 6;
+const DEFAULT_MAX_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 1500;
+const RETRYABLE_ERROR_PATTERNS = [
+  /timed? ?out/i,
+  /abort/i,
+  /fetch failed/i,
+  /network/i,
+  /econnreset/i,
+  /enotfound/i,
+  /429/,
+  /5\d{2}/
+];
 
 interface CreateJobInput {
   urls: string[];
@@ -37,8 +49,35 @@ function createItems(urls: string[]): ScanItem[] {
     id: toSlug(url) || Math.random().toString(36).slice(2, 8),
     url,
     normalizedUrl: normalizeUrl(url) ?? url,
-    status: "pending"
+    status: "pending",
+    attempts: 0,
+    maxAttempts: DEFAULT_MAX_ATTEMPTS
   }));
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function isRetryableError(error?: string): boolean {
+  if (!error) {
+    return false;
+  }
+  return RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(error));
+}
+
+function shouldRetry(item: ScanItem): boolean {
+  return (
+    item.status === "failed" &&
+    item.attempts < item.maxAttempts &&
+    isRetryableError(item.error)
+  );
+}
+
+function nextRetryDelayMs(attempt: number): number {
+  return RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1);
 }
 
 function recalculateCounts(job: ScanJob): void {
@@ -76,12 +115,15 @@ async function runJob(jobId: string): Promise<void> {
     job.status = "running";
     job.updatedAt = new Date().toISOString();
 
-    let cursor = 0;
+    const queue = job.items.map((_, index) => index);
 
     async function workerLoop(): Promise<void> {
       while (true) {
-        const index = cursor;
-        cursor += 1;
+        const index = queue.shift();
+        if (index === undefined) {
+          break;
+        }
+
         const item = job.items[index];
         if (!item) {
           break;
@@ -96,7 +138,9 @@ async function runJob(jobId: string): Promise<void> {
         }
 
         item.status = "running";
+        item.nextRetryAt = undefined;
         item.startedAt = new Date().toISOString();
+        item.attempts += 1;
         recalculateCounts(job);
 
         const result = await scanWebsite({
@@ -110,6 +154,17 @@ async function runJob(jobId: string): Promise<void> {
         item.status = result.status === "failed" ? "failed" : "completed";
         item.error = result.error;
         item.finishedAt = result.finishedAt;
+
+        if (shouldRetry(item)) {
+          const retryDelay = nextRetryDelayMs(item.attempts);
+          item.status = "pending";
+          item.nextRetryAt = new Date(Date.now() + retryDelay).toISOString();
+          item.error = `Falha transitória. Reagendado (${item.attempts}/${item.maxAttempts}): ${result.error}`;
+          recalculateCounts(job);
+          await delay(retryDelay);
+          queue.push(index);
+          continue;
+        }
 
         recalculateCounts(job);
       }
@@ -168,9 +223,11 @@ export function retryFailedItems(jobId: string): ScanJob | undefined {
     if (item.status === "failed") {
       item.status = "pending";
       item.error = undefined;
+      item.nextRetryAt = undefined;
       item.startedAt = undefined;
       item.finishedAt = undefined;
       item.result = undefined;
+      item.attempts = 0;
     }
   }
 

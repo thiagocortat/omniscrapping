@@ -36,6 +36,9 @@ export interface ScanItem {
   url: string;
   normalizedUrl: string;
   status: ScanStatus;
+  attempts: number;
+  maxAttempts: number;
+  nextRetryAt?: string;
   startedAt?: string;
   finishedAt?: string;
   error?: string;

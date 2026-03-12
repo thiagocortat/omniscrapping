@@ -141,6 +141,10 @@ export async function scanWebsite(input: EngineInput): Promise<UrlScanResult> {
       redirect: "follow"
     });
 
+    if (!response.ok && (response.status === 429 || response.status >= 500)) {
+      throw new Error(`HTTP ${response.status} ao buscar a URL.`);
+    }
+
     const html = await response.text();
     const scripts = parseScriptSources(html);
     const cookies = response.headers.get("set-cookie") ?? "";
