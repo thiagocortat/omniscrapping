@@ -8,6 +8,7 @@ const statusColor: Record<string, string> = {
   completed: "bg-emerald-100 text-emerald-800",
   partial: "bg-orange-100 text-orange-800",
   failed: "bg-rose-100 text-rose-800",
+  aborted: "bg-fuchsia-100 text-fuchsia-800",
   pending: "bg-slate-200 text-slate-700"
 };
 

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { retryFailedItems } from "@/lib/job-store";
+import { abortJob } from "@/lib/job-store";
 
 export async function POST(
   _request: Request,
@@ -7,7 +7,7 @@ export async function POST(
 ) {
   try {
     const { jobId } = await context.params;
-    const job = await retryFailedItems(jobId);
+    const job = await abortJob(jobId);
 
     if (!job) {
       return NextResponse.json({ error: "Job não encontrado." }, { status: 404 });
@@ -20,7 +20,7 @@ export async function POST(
         error:
           error instanceof Error
             ? error.message
-            : "Falha ao reprocessar job."
+            : "Falha ao abortar job."
       },
       { status: 500 }
     );

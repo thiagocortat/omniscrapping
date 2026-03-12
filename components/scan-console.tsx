@@ -6,6 +6,7 @@ import type { AnalysisMode, ScanItem, ScanJob } from "@/lib/types";
 import { StatusPill } from "@/components/status-pill";
 
 type InputMode = "single" | "batch" | "file";
+type CsvDelimiter = "," | ";";
 
 function splitByLine(value: string): string[] {
   return value
@@ -14,12 +15,13 @@ function splitByLine(value: string): string[] {
     .filter(Boolean);
 }
 
-function parseFirstCsvField(line: string, delimiter: "," | ";"): string {
+function parseCsvLine(line: string, delimiter: CsvDelimiter): string[] {
   if (!line.trim()) {
-    return "";
+    return [];
   }
 
-  let value = "";
+  const values: string[] = [];
+  let current = "";
   let inQuotes = false;
 
   for (let i = 0; i < line.length; i += 1) {
@@ -27,7 +29,7 @@ function parseFirstCsvField(line: string, delimiter: "," | ";"): string {
 
     if (char === "\"") {
       if (inQuotes && line[i + 1] === "\"") {
-        value += "\"";
+        current += "\"";
         i += 1;
       } else {
         inQuotes = !inQuotes;
@@ -36,36 +38,80 @@ function parseFirstCsvField(line: string, delimiter: "," | ";"): string {
     }
 
     if (!inQuotes && char === delimiter) {
-      break;
+      values.push(current.trim());
+      current = "";
+      continue;
     }
 
-    value += char;
+    current += char;
   }
 
-  return value.trim();
+  values.push(current.trim());
+  return values.map((value) => value.replace(/^"|"$/g, ""));
 }
 
-function detectDelimiter(firstRow: string): "," | ";" {
+function detectDelimiter(firstRow: string): CsvDelimiter {
   const commas = (firstRow.match(/,/g) ?? []).length;
   const semicolons = (firstRow.match(/;/g) ?? []).length;
   return semicolons > commas ? ";" : ",";
 }
 
-function parseCsvFirstColumn(content: string): string[] {
+function looksLikeUrl(value: string): boolean {
+  return /^(https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,}(\/|$)/i.test(value.trim());
+}
+
+function isUrlColumnLabel(value: string): boolean {
+  return /^(url|urls|domain|domains|dominio|dominios|website|site|link)$/i.test(
+    value.trim()
+  );
+}
+
+function parseCsv(content: string): {
+  columns: string[];
+  rows: string[][];
+  suggestedColumnIndex: number;
+} {
   const rows = content.split(/\r?\n/g).filter((row) => row.trim().length > 0);
   if (!rows.length) {
-    return [];
+    return { columns: [], rows: [], suggestedColumnIndex: 0 };
   }
 
   const delimiter = detectDelimiter(rows[0]);
+  const parsedRows = rows.map((row) => parseCsvLine(row, delimiter));
+  const firstRow = parsedRows[0] ?? [];
+  const secondRow = parsedRows[1] ?? [];
 
-  return rows
-    .map((row) => parseFirstCsvField(row, delimiter))
-    .map((value) => value.replace(/^"|"$/g, ""))
-    .filter(
-      (item): item is string =>
-        Boolean(item) && !/^(url|domain|website)$/i.test(item)
-    );
+  const hasHeader =
+    firstRow.some(isUrlColumnLabel) ||
+    (!firstRow.some(looksLikeUrl) && secondRow.some(looksLikeUrl));
+
+  const columns = hasHeader
+    ? firstRow.map((value, index) => value || `Coluna ${index + 1}`)
+    : firstRow.map((_, index) => `Coluna ${index + 1}`);
+
+  const dataRows = hasHeader ? parsedRows.slice(1) : parsedRows;
+
+  let suggestedColumnIndex = columns.findIndex(isUrlColumnLabel);
+  if (suggestedColumnIndex === -1) {
+    let bestScore = -1;
+    for (let col = 0; col < columns.length; col += 1) {
+      const sample = dataRows.slice(0, 30);
+      const score = sample.filter((row) => looksLikeUrl(row[col] ?? "")).length;
+      if (score > bestScore) {
+        bestScore = score;
+        suggestedColumnIndex = col;
+      }
+    }
+  }
+  if (suggestedColumnIndex < 0) {
+    suggestedColumnIndex = 0;
+  }
+
+  return {
+    columns,
+    rows: dataRows,
+    suggestedColumnIndex
+  };
 }
 
 function progressPercentage(job?: ScanJob): number {
@@ -80,6 +126,9 @@ export function ScanConsole() {
   const [singleUrl, setSingleUrl] = useState("");
   const [urlsText, setUrlsText] = useState("");
   const [fileUrls, setFileUrls] = useState<string[]>([]);
+  const [csvColumns, setCsvColumns] = useState<string[]>([]);
+  const [csvRows, setCsvRows] = useState<string[][]>([]);
+  const [selectedCsvColumnIndex, setSelectedCsvColumnIndex] = useState(0);
   const [mode, setMode] = useState<AnalysisMode>("all");
   const [targetsText, setTargetsText] = useState("RD Station");
   const [job, setJob] = useState<ScanJob | null>(null);
@@ -95,18 +144,32 @@ export function ScanConsole() {
   }, [job, selectedItemId]);
 
   useEffect(() => {
-    if (!job || ["completed", "partial", "failed"].includes(job.status)) {
+    if (
+      !job ||
+      ["completed", "partial", "failed"].includes(job.status) ||
+      (job.status === "aborted" && job.counts.running === 0)
+    ) {
       return;
     }
 
     const poll = window.setInterval(async () => {
       try {
-        const response = await fetch(`/api/scans/${job.id}`);
+        const response = await fetch(`/api/scans/${job.id}?view=summary`);
         const data = await response.json();
 
         if (response.ok) {
           setJob(data.job);
+          return;
         }
+
+        if (response.status === 404) {
+          setError(
+            "Job não encontrado neste nó de execução. Em produção, use armazenamento persistente (Redis/Postgres) para filas grandes."
+          );
+          return;
+        }
+
+        setError(data.error ?? "Falha ao atualizar progresso do job.");
       } catch {
         setError("Falha temporária ao atualizar progresso do job.");
       }
@@ -116,6 +179,21 @@ export function ScanConsole() {
   }, [job]);
 
   const targets = useMemo(() => splitByLine(targetsText), [targetsText]);
+  const csvPreviewRows = useMemo(() => csvRows.slice(0, 5), [csvRows]);
+
+  useEffect(() => {
+    if (!csvRows.length) {
+      setFileUrls([]);
+      return;
+    }
+
+    const extracted = csvRows
+      .map((row) => (row[selectedCsvColumnIndex] ?? "").trim())
+      .filter(Boolean)
+      .filter((value) => !isUrlColumnLabel(value));
+
+    setFileUrls(extracted);
+  }, [csvRows, selectedCsvColumnIndex]);
 
   async function handleFileUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -124,13 +202,25 @@ export function ScanConsole() {
     }
 
     if (!file.name.toLowerCase().endsWith(".csv")) {
+      setCsvColumns([]);
+      setCsvRows([]);
+      setFileUrls([]);
       setError("No MVP atual, apenas upload CSV está habilitado.");
       return;
     }
 
     const content = await file.text();
-    const parsed = parseCsvFirstColumn(content);
-    setFileUrls(parsed);
+    const parsed = parseCsv(content);
+    if (!parsed.rows.length || !parsed.columns.length) {
+      setCsvColumns([]);
+      setCsvRows([]);
+      setFileUrls([]);
+      setError("CSV vazio ou sem linhas válidas para leitura.");
+      return;
+    }
+    setCsvColumns(parsed.columns);
+    setCsvRows(parsed.rows);
+    setSelectedCsvColumnIndex(parsed.suggestedColumnIndex);
     setError(null);
   }
 
@@ -202,6 +292,24 @@ export function ScanConsole() {
     }
   }
 
+  async function abortCurrentJob() {
+    if (!job) {
+      return;
+    }
+
+    const response = await fetch(`/api/scans/${job.id}/abort`, {
+      method: "POST"
+    });
+    const data = await response.json();
+
+    if (response.ok) {
+      setJob(data.job);
+      return;
+    }
+
+    setError(data.error ?? "Falha ao abortar job.");
+  }
+
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-6 px-4 pb-12 pt-8 md:px-8">
       <section className="anim-rise relative overflow-hidden rounded-3xl bg-panel px-6 py-8 text-slate-50 shadow-pulse md:px-10">
@@ -271,7 +379,75 @@ export function ScanConsole() {
                   onChange={handleFileUpload}
                   className="mt-2 block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-panel file:px-3 file:py-2 file:text-slate-50"
                 />
+                {csvColumns.length > 0 && (
+                  <label className="mt-3 block text-sm">
+                    <span className="mb-1 block font-semibold text-ink">
+                      Coluna com URL
+                    </span>
+                    <select
+                      value={selectedCsvColumnIndex}
+                      onChange={(event) =>
+                        setSelectedCsvColumnIndex(Number(event.target.value))
+                      }
+                      className="w-full rounded-xl border border-ink/15 bg-white px-3 py-2 outline-none ring-accent transition focus:ring-2"
+                    >
+                      {csvColumns.map((column, index) => (
+                        <option key={`${column}-${index}`} value={index}>
+                          {column}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <p className="mt-2 text-xs text-muted">URLs carregadas: {fileUrls.length}</p>
+                {csvColumns.length > 0 && (
+                  <p className="mt-1 text-xs text-muted">
+                    Coluna ativa:{" "}
+                    <span className="font-semibold text-ink">
+                      {csvColumns[selectedCsvColumnIndex] ?? "Coluna 1"}
+                    </span>
+                  </p>
+                )}
+                {csvPreviewRows.length > 0 && (
+                  <div className="mt-2 overflow-x-auto rounded-xl border border-ink/10 bg-white">
+                    <table className="min-w-full text-left text-xs">
+                      <thead className="bg-slate-100 text-muted">
+                        <tr>
+                          {csvColumns.map((column, index) => (
+                            <th
+                              key={`preview-${column}-${index}`}
+                              className={`px-2 py-1 ${
+                                selectedCsvColumnIndex === index
+                                  ? "bg-amber-100 text-ink"
+                                  : ""
+                              }`}
+                            >
+                              {column}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {csvPreviewRows.map((row, rowIndex) => (
+                          <tr key={`row-${rowIndex}`} className="border-t border-ink/10">
+                            {csvColumns.map((_, colIndex) => (
+                              <td
+                                key={`cell-${rowIndex}-${colIndex}`}
+                                className={`max-w-[140px] truncate px-2 py-1 ${
+                                  selectedCsvColumnIndex === colIndex
+                                    ? "bg-amber-50 font-medium text-ink"
+                                    : "text-muted"
+                                }`}
+                              >
+                                {row[colIndex] ?? "-"}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -349,8 +525,16 @@ export function ScanConsole() {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
+                  onClick={abortCurrentJob}
+                  disabled={!["queued", "running"].includes(job.status)}
+                  className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-white disabled:opacity-40"
+                >
+                  Abortar job
+                </button>
+                <button
+                  type="button"
                   onClick={retryFailed}
-                  disabled={job.counts.failed === 0 || job.status === "running"}
+                  disabled={job.counts.failed === 0 || ["running", "queued"].includes(job.status)}
                   className="rounded-lg bg-panel px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-50 disabled:opacity-40"
                 >
                   Reprocessar erros

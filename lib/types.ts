@@ -4,7 +4,13 @@ export type DetectionStatus = "found" | "not_found" | "inconclusive";
 
 export type ScanStatus = "pending" | "running" | "completed" | "failed";
 
-export type JobStatus = "queued" | "running" | "completed" | "partial" | "failed";
+export type JobStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "partial"
+  | "failed"
+  | "aborted";
 
 export interface DetectionEvidence {
   type: "html" | "script" | "header" | "cookie" | "custom";

@@ -1,0 +1,48 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: techstack-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: techstack-web
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+      START_WORKER_IN_WEB: "false"
+      SCAN_WORKER_CONCURRENCY: "8"
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+    command: ["npm", "run", "start"]
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: techstack-worker
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+      SCAN_WORKER_CONCURRENCY: "8"
+    command: ["npm", "run", "worker:scan"]
+
+volumes:
+  redis_data:
