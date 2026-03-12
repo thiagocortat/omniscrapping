@@ -26,8 +26,8 @@ services:
       START_WORKER_IN_WEB: "false"
       SCAN_WORKER_CONCURRENCY: "8"
       PORT: "3000"
-    ports:
-      - "3000:3000"
+    expose:
+      - "3000"
     command: ["npm", "run", "start"]
 
   worker:
