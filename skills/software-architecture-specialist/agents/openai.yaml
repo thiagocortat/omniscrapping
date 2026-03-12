@@ -1,0 +1,4 @@
+interface:
+  display_name: "Arquiteto de Software"
+  short_description: "Define arquitetura robusta para aplicacoes."
+  default_prompt: "Use $software-architecture-specialist para propor uma arquitetura de software com trade-offs claros para esta aplicacao."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Especialista React Frontend"
+  short_description: "Entrega frontend React com qualidade."
+  default_prompt: "Use $react-frontend-specialist para projetar e implementar este frontend React com foco em UX, qualidade e performance."
