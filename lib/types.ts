@@ -1,4 +1,5 @@
 export type AnalysisMode = "all" | "specific";
+export type ScanStrategy = "static" | "browser";
 
 export type DetectionStatus = "found" | "not_found" | "inconclusive";
 
@@ -54,6 +55,7 @@ export interface ScanItem {
 export interface ScanJob {
   id: string;
   mode: AnalysisMode;
+  scanStrategy: ScanStrategy;
   targets: string[];
   createdAt: string;
   updatedAt: string;
@@ -72,4 +74,5 @@ export interface CreateScanPayload {
   urls: string[];
   mode: AnalysisMode;
   targets?: string[];
+  scanStrategy?: ScanStrategy;
 }

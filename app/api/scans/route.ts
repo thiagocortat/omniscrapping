@@ -30,6 +30,7 @@ export async function POST(request: Request) {
     }
 
     const mode = payload.mode === "specific" ? "specific" : "all";
+    const scanStrategy = payload.scanStrategy === "browser" ? "browser" : "static";
     const targets = compactUnique(payload.targets ?? []);
 
     if (mode === "specific" && !targets.length) {
@@ -42,6 +43,7 @@ export async function POST(request: Request) {
     const job = await createJob({
       urls: normalizedUrls,
       mode,
+      scanStrategy,
       targets
     });
 

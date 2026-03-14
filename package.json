@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build --webpack",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "worker:scan": "tsx worker/scan-worker.ts"
   },
@@ -14,6 +14,7 @@
     "bullmq": "^5.56.9",
     "ioredis": "^5.8.2",
     "next": "16.1.6",
+    "playwright": "^1.58.2",
     "react": "19.0.0",
     "react-dom": "19.0.0"
   },

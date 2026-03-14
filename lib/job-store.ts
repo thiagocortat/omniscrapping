@@ -1,10 +1,13 @@
 import IORedis from "ioredis";
 import { Queue, Worker } from "bullmq";
 import { scanWebsite } from "@/lib/scan-engine";
-import type { AnalysisMode, ScanItem, ScanJob, ScanStatus } from "@/lib/types";
+import type { AnalysisMode, ScanItem, ScanJob, ScanStatus, ScanStrategy } from "@/lib/types";
 import { normalizeUrl, toSlug } from "@/lib/utils";
 
-const QUEUE_NAME = "techstack-scans";
+const QUEUE_NAMES: Record<ScanStrategy, string> = {
+  static: "techstack-scans-static",
+  browser: "techstack-scans-browser"
+};
 const MAX_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 1500;
 
@@ -22,6 +25,7 @@ const RETRYABLE_ERROR_PATTERNS = [
 interface CreateJobInput {
   urls: string[];
   mode: AnalysisMode;
+  scanStrategy: ScanStrategy;
   targets: string[];
 }
 
@@ -33,6 +37,7 @@ interface ScanTaskPayload {
 interface ScanMeta {
   id: string;
   mode: AnalysisMode;
+  scanStrategy: ScanStrategy;
   targets: string[];
   createdAt: string;
   updatedAt: string;
@@ -72,8 +77,9 @@ function recalculateCountsFromItems(items: ScanItem[]): ScanMeta["counts"] {
 
 const globalStore = globalThis as typeof globalThis & {
   __techstackRedis?: IORedis;
-  __techstackQueue?: Queue;
+  __techstackQueues?: Partial<Record<ScanStrategy, Queue>>;
   __techstackWorkerStarted?: boolean;
+  __techstackWorkers?: Array<Worker<ScanTaskPayload>>;
 };
 
 function getRedisUrl(): string {
@@ -94,9 +100,13 @@ function getRedis(): IORedis {
   return globalStore.__techstackRedis;
 }
 
-function getQueue(): Queue {
-  if (!globalStore.__techstackQueue) {
-    globalStore.__techstackQueue = new Queue(QUEUE_NAME, {
+function getQueue(scanStrategy: ScanStrategy): Queue {
+  if (!globalStore.__techstackQueues) {
+    globalStore.__techstackQueues = {};
+  }
+
+  if (!globalStore.__techstackQueues[scanStrategy]) {
+    globalStore.__techstackQueues[scanStrategy] = new Queue(QUEUE_NAMES[scanStrategy], {
       connection: {
         url: getRedisUrl()
       },
@@ -111,7 +121,7 @@ function getQueue(): Queue {
       }
     });
   }
-  return globalStore.__techstackQueue;
+  return globalStore.__techstackQueues[scanStrategy] as Queue;
 }
 
 function keyMeta(scanId: string): string {
@@ -155,6 +165,7 @@ async function readMeta(scanId: string): Promise<ScanMeta | undefined> {
   return {
     id: meta.id,
     mode: (meta.mode as AnalysisMode) ?? "all",
+    scanStrategy: (meta.scanStrategy as ScanStrategy) ?? "static",
     targets: meta.targets ? (JSON.parse(meta.targets) as string[]) : [],
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
@@ -175,6 +186,7 @@ async function writeMeta(meta: ScanMeta): Promise<void> {
   await redis.hset(keyMeta(meta.id), {
     id: meta.id,
     mode: meta.mode,
+    scanStrategy: meta.scanStrategy,
     targets: JSON.stringify(meta.targets),
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
@@ -257,8 +269,12 @@ function transition(meta: ScanMeta, from: ScanStatus, to: ScanStatus): void {
   }
 }
 
-async function enqueueScanItem(scanId: string, itemId: string): Promise<void> {
-  const queue = getQueue();
+async function enqueueScanItem(
+  scanId: string,
+  itemId: string,
+  scanStrategy: ScanStrategy
+): Promise<void> {
+  const queue = getQueue(scanStrategy);
   await queue.add("scan-url", { scanId, itemId });
 }
 
@@ -307,6 +323,7 @@ async function processScanItem(scanId: string, itemId: string): Promise<void> {
     url: item.url,
     normalizedUrl: item.normalizedUrl,
     mode: meta.mode,
+    scanStrategy: meta.scanStrategy,
     targets: meta.targets
   });
 
@@ -350,23 +367,35 @@ function startWorkerInternal(force = false): void {
   }
 
   globalStore.__techstackWorkerStarted = true;
-
-  const worker = new Worker<ScanTaskPayload>(
-    QUEUE_NAME,
-    async (job) => {
-      await processScanItem(job.data.scanId, job.data.itemId);
-    },
-    {
-      connection: {
-        url: getRedisUrl()
-      },
-      concurrency: Number(process.env.SCAN_WORKER_CONCURRENCY ?? 8)
-    }
+  const workers: Array<Worker<ScanTaskPayload>> = [];
+  const staticConcurrency = Number(
+    process.env.SCAN_WORKER_CONCURRENCY_STATIC ?? process.env.SCAN_WORKER_CONCURRENCY ?? 8
   );
+  const browserConcurrency = Number(process.env.SCAN_WORKER_CONCURRENCY_BROWSER ?? 2);
 
-  worker.on("error", (error) => {
-    console.error("[scan-worker] worker error", error);
+  (["static", "browser"] as const).forEach((scanStrategy) => {
+    const concurrency = scanStrategy === "browser" ? browserConcurrency : staticConcurrency;
+    const worker = new Worker<ScanTaskPayload>(
+      QUEUE_NAMES[scanStrategy],
+      async (job) => {
+        await processScanItem(job.data.scanId, job.data.itemId);
+      },
+      {
+        connection: {
+          url: getRedisUrl()
+        },
+        concurrency: Math.max(1, concurrency)
+      }
+    );
+
+    worker.on("error", (error) => {
+      console.error(`[scan-worker:${scanStrategy}] worker error`, error);
+    });
+
+    workers.push(worker);
   });
+
+  globalStore.__techstackWorkers = workers;
 }
 
 export function ensureScanWorker(): void {
@@ -395,6 +424,7 @@ export async function createJob(input: CreateJobInput): Promise<ScanJob> {
   const meta: ScanMeta = {
     id: scanId,
     mode: input.mode,
+    scanStrategy: input.scanStrategy,
     targets: input.targets,
     createdAt: now,
     updatedAt: now,
@@ -414,6 +444,7 @@ export async function createJob(input: CreateJobInput): Promise<ScanJob> {
   multi.hset(keyMeta(scanId), {
     id: meta.id,
     mode: meta.mode,
+    scanStrategy: meta.scanStrategy,
     targets: JSON.stringify(meta.targets),
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
@@ -435,7 +466,7 @@ export async function createJob(input: CreateJobInput): Promise<ScanJob> {
   await multi.exec();
 
   for (const item of items) {
-    await enqueueScanItem(scanId, item.id);
+    await enqueueScanItem(scanId, item.id, meta.scanStrategy);
   }
 
   return {
@@ -474,6 +505,7 @@ export async function getJob(jobId: string): Promise<ScanJob | undefined> {
   return {
     id: effectiveMeta.id,
     mode: effectiveMeta.mode,
+    scanStrategy: effectiveMeta.scanStrategy,
     targets: effectiveMeta.targets,
     createdAt: effectiveMeta.createdAt,
     updatedAt: effectiveMeta.updatedAt,
@@ -513,7 +545,7 @@ export async function retryFailedItems(jobId: string): Promise<ScanJob | undefin
     item.nextRetryAt = undefined;
     item.result = undefined;
     await writeItem(jobId, item);
-    await enqueueScanItem(jobId, item.id);
+    await enqueueScanItem(jobId, item.id, meta.scanStrategy);
   }
 
   meta.updatedAt = new Date().toISOString();
@@ -550,10 +582,14 @@ export async function abortJob(jobId: string): Promise<ScanJob | undefined> {
   meta.status = deriveStatus(meta);
   await writeMeta(meta);
 
-  const queue = getQueue();
-  const candidates = await queue.getJobs(["waiting", "delayed", "prioritized"]);
+  const [staticQueue, browserQueue] = [getQueue("static"), getQueue("browser")];
+  const [staticCandidates, browserCandidates] = await Promise.all([
+    staticQueue.getJobs(["waiting", "delayed", "prioritized"]),
+    browserQueue.getJobs(["waiting", "delayed", "prioritized"])
+  ]);
+
   await Promise.all(
-    candidates
+    [...staticCandidates, ...browserCandidates]
       .filter((job) => job.data?.scanId === jobId)
       .map((job) => job.remove())
   );

@@ -17,17 +17,25 @@ export const TECHNOLOGY_SIGNATURES: TechnologySignature[] = [
     category: "marketing automation",
     strongScriptPatterns: [
       /d335luupugsy2\.cloudfront\.net\/js\/loader-scripts\/[0-9a-f-]{36}-loader\.js/i,
-      /d335luupugsy2\.cloudfront\.net\/js\/integration\/stable\/rd-js-integration(?:\.min)?\.js/i
+      /d335luupugsy2\.cloudfront\.net\/js\/integration\/stable\/rd-js-integration(?:\.min)?\.js/i,
+      /d335luupugsy2\.cloudfront\.net\/js\/forms\/stable\/rdstation-forms(?:\.min)?\.js/i
     ],
     scriptPatterns: [
       /d335luupugsy2\.cloudfront\.net\/js\//i,
       /rd-js-integration/i,
-      /rdstation-(?:forms|min|init)\.js/i
+      /rdstation-(?:forms|min|init)\.js/i,
+      /pageview-notify\.rdstation\.com\.br/i,
+      /popups\.rdstation\.com\.br/i
     ],
     htmlPatterns: [
       /\bRdIntegration\b/i,
+      /\bRDStationForms\b/i,
+      /\bnew\s+RDStationForms\s*\(/i,
+      /\bRdIntegration\.post\s*\(/i,
       /token_rdstation/i,
       /api\.rd\.services\/platform\/(?:conversions|events)/i,
+      /pageview-notify\.rdstation\.com\.br/i,
+      /popups\.rdstation\.com\.br/i,
       /"rdStation"\s*:\s*\{/i,
       /data-rdstation-form-id=/i,
       /data-rdstation-form-token=/i
@@ -36,7 +44,8 @@ export const TECHNOLOGY_SIGNATURES: TechnologySignature[] = [
       /"integrations"\s*:\s*\{\s*"rdStation"\s*:\s*\{\s*"token"\s*:\s*"[a-z0-9]{16,}"/i,
       /"rdStation"\s*:\s*\{\s*"token"\s*:\s*"[a-z0-9]{16,}"/i,
       /data-rdstation-form-id=["'][^"']+["'][^>]*data-rdstation-form-token=["'][^"']+["']/i
-    ]
+    ],
+    cookiePatterns: [/\brdtrk\b/i, /\b_form_fields\b/i, /\b_rd(?:tk|st|trk|station)[^=]*=/i]
   },
   {
     name: "Google Tag Manager",

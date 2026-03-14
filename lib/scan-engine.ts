@@ -1,14 +1,25 @@
 import { TECHNOLOGY_SIGNATURES } from "@/lib/signatures";
 import { isSafeTargetUrl, roundConfidence } from "@/lib/utils";
-import type { AnalysisMode, DetectionEvidence, DetectionResult, UrlScanResult } from "@/lib/types";
+import type { AnalysisMode, DetectionEvidence, DetectionResult, ScanStrategy, UrlScanResult } from "@/lib/types";
 
 const FETCH_TIMEOUT_MS = 12000;
+const BROWSER_GOTO_TIMEOUT_MS = Number(process.env.SCAN_BROWSER_GOTO_TIMEOUT_MS ?? 20000);
+const BROWSER_NETWORK_IDLE_WAIT_MS = Number(process.env.SCAN_BROWSER_NETWORK_IDLE_WAIT_MS ?? 5000);
 
 interface EngineInput {
   url: string;
   normalizedUrl: string;
   mode: AnalysisMode;
+  scanStrategy: ScanStrategy;
   targets: string[];
+}
+
+interface CollectedPageData {
+  html: string;
+  scripts: string[];
+  cookies: string;
+  runtimeSignals: string[];
+  getHeader: (name: string) => string;
 }
 
 function normalizeMatcher(value: string): string {
@@ -50,13 +61,54 @@ function findFromRegexPool(
   return evidences;
 }
 
+function evidenceStrength(weight: number): "alta" | "media" | "baixa" {
+  if (weight >= 1.25) {
+    return "alta";
+  }
+  if (weight >= 0.9) {
+    return "media";
+  }
+  return "baixa";
+}
+
+function evidenceTypePriority(type: DetectionEvidence["type"]): number {
+  if (type === "script") {
+    return 5;
+  }
+  if (type === "header") {
+    return 4;
+  }
+  if (type === "cookie") {
+    return 3;
+  }
+  if (type === "html") {
+    return 2;
+  }
+  return 1;
+}
+
+function pickPrimaryEvidence(evidences: DetectionEvidence[]): DetectionEvidence | undefined {
+  if (!evidences.length) {
+    return undefined;
+  }
+
+  const ranked = [...evidences].sort((a, b) => {
+    if (b.weight !== a.weight) {
+      return b.weight - a.weight;
+    }
+    return evidenceTypePriority(b.type) - evidenceTypePriority(a.type);
+  });
+
+  return ranked[0];
+}
+
 function summarizeEvidences(evidences: DetectionEvidence[]): string {
   if (!evidences.length) {
     return "Sem evidências confiáveis.";
   }
 
-  const primary = evidences[0];
-  return `${primary.type} em ${primary.location}: ${primary.value}`;
+  const primary = pickPrimaryEvidence(evidences) ?? evidences[0];
+  return `evidência ${evidenceStrength(primary.weight)} (${primary.type} em ${primary.location}): ${primary.value}`;
 }
 
 function computeStatus(evidences: DetectionEvidence[]): DetectionResult["status"] {
@@ -117,23 +169,19 @@ function detectSpecificFallback(target: string, html: string, scripts: string[])
   };
 }
 
-export async function scanWebsite(input: EngineInput): Promise<UrlScanResult> {
+function buildDetectionSource(html: string, runtimeSignals: string[]): string {
+  if (!runtimeSignals.length) {
+    return html;
+  }
+  return `${html}\n${runtimeSignals.join("\n")}`;
+}
+
+async function collectWithFetch(normalizedUrl: string): Promise<CollectedPageData> {
   const controller = new AbortController();
   const timeoutHandle = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   try {
-    if (!isSafeTargetUrl(input.normalizedUrl)) {
-      return {
-        url: input.url,
-        normalizedUrl: input.normalizedUrl,
-        status: "failed",
-        error: "URL bloqueada por política de segurança (SSRF).",
-        finishedAt: new Date().toISOString(),
-        detections: []
-      };
-    }
-
-    const response = await fetch(input.normalizedUrl, {
+    const response = await fetch(normalizedUrl, {
       signal: controller.signal,
       headers: {
         "user-agent": "TechStackScannerBot/1.0"
@@ -146,8 +194,139 @@ export async function scanWebsite(input: EngineInput): Promise<UrlScanResult> {
     }
 
     const html = await response.text();
-    const scripts = parseScriptSources(html);
-    const cookies = response.headers.get("set-cookie") ?? "";
+    return {
+      html,
+      scripts: parseScriptSources(html),
+      cookies: response.headers.get("set-cookie") ?? "",
+      runtimeSignals: [],
+      getHeader: (name: string) => response.headers.get(name) ?? ""
+    };
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
+async function collectWithPlaywright(normalizedUrl: string): Promise<CollectedPageData> {
+  let playwrightModule: typeof import("playwright");
+
+  try {
+    playwrightModule = await import("playwright");
+  } catch {
+    throw new Error("Modo browser requer a dependência 'playwright'. Execute: npm install playwright");
+  }
+
+  let browser: import("playwright").Browser | undefined;
+  let context: import("playwright").BrowserContext | undefined;
+  let page: import("playwright").Page | undefined;
+
+  try {
+    browser = await playwrightModule.chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.toLowerCase().includes("executable")) {
+      throw new Error("Chromium do Playwright não encontrado. Execute: npx playwright install chromium");
+    }
+    throw error;
+  }
+
+  try {
+    context = await browser.newContext({
+      userAgent: "TechStackScannerBot/1.0 (browser)",
+      ignoreHTTPSErrors: true
+    });
+    page = await context.newPage();
+
+    const requestUrls = new Set<string>();
+    page.on("request", (request) => {
+      requestUrls.add(request.url());
+    });
+
+    const mainResponse = await page.goto(normalizedUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: BROWSER_GOTO_TIMEOUT_MS
+    });
+
+    try {
+      await page.waitForLoadState("networkidle", {
+        timeout: BROWSER_NETWORK_IDLE_WAIT_MS
+      });
+    } catch {
+      // Muitos sites mantêm conexões abertas; seguimos com o estado atual da página.
+    }
+
+    const html = await page.content();
+    const domScriptSources = await page.$$eval("script[src]", (elements) =>
+      Array.from(
+        new Set(
+          elements
+            .map((element) => element.getAttribute("src") ?? "")
+            .map((value) => value.trim())
+            .filter(Boolean)
+        )
+      )
+    );
+
+    const runtimeFlags = await page.evaluate(() => {
+      const win = window as typeof window & {
+        RDStationForms?: unknown;
+        RdIntegration?: unknown;
+      };
+
+      return {
+        hasRdStationForms: typeof win.RDStationForms !== "undefined",
+        hasRdIntegration: typeof win.RdIntegration !== "undefined"
+      };
+    });
+
+    const cookies = (await context.cookies())
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join("; ");
+
+    const headerMap = mainResponse?.headers() ?? {};
+    const runtimeSignals = Array.from(requestUrls);
+    if (runtimeFlags.hasRdStationForms) {
+      runtimeSignals.push("RDStationForms");
+    }
+    if (runtimeFlags.hasRdIntegration) {
+      runtimeSignals.push("RdIntegration");
+    }
+
+    return {
+      html,
+      scripts: Array.from(new Set([...parseScriptSources(html), ...domScriptSources])),
+      cookies,
+      runtimeSignals,
+      getHeader: (name: string) => headerMap[name.toLowerCase()] ?? ""
+    };
+  } finally {
+    await page?.close().catch(() => undefined);
+    await context?.close().catch(() => undefined);
+    await browser?.close().catch(() => undefined);
+  }
+}
+
+export async function scanWebsite(input: EngineInput): Promise<UrlScanResult> {
+  try {
+    if (!isSafeTargetUrl(input.normalizedUrl)) {
+      return {
+        url: input.url,
+        normalizedUrl: input.normalizedUrl,
+        status: "failed",
+        error: "URL bloqueada por política de segurança (SSRF).",
+        finishedAt: new Date().toISOString(),
+        detections: []
+      };
+    }
+
+    const collected =
+      input.scanStrategy === "browser"
+        ? await collectWithPlaywright(input.normalizedUrl)
+        : await collectWithFetch(input.normalizedUrl);
+
+    const detectionSource = buildDetectionSource(collected.html, collected.runtimeSignals);
 
     const candidateSignatures =
       input.mode === "specific"
@@ -172,11 +351,11 @@ export async function scanWebsite(input: EngineInput): Promise<UrlScanResult> {
       const evidences: DetectionEvidence[] = [];
 
       evidences.push(
-        ...findFromRegexPool(html, signature.htmlPatterns, "html", "document", 0.5)
+        ...findFromRegexPool(detectionSource, signature.htmlPatterns, "html", "document", 0.5)
       );
       evidences.push(
         ...findFromRegexPool(
-          html,
+          detectionSource,
           signature.strongHtmlPatterns,
           "html",
           "document",
@@ -184,7 +363,7 @@ export async function scanWebsite(input: EngineInput): Promise<UrlScanResult> {
         )
       );
 
-      for (const src of scripts) {
+      for (const src of collected.scripts) {
         evidences.push(
           ...findFromRegexPool(src, signature.scriptPatterns, "script", "script-src", 1)
         );
@@ -201,7 +380,7 @@ export async function scanWebsite(input: EngineInput): Promise<UrlScanResult> {
 
       if (signature.headerPatterns?.length) {
         for (const headerPattern of signature.headerPatterns) {
-          const headerValue = response.headers.get(headerPattern.header) ?? "";
+          const headerValue = collected.getHeader(headerPattern.header);
           if (headerValue && headerPattern.pattern.test(headerValue)) {
             evidences.push({
               type: "header",
@@ -214,7 +393,7 @@ export async function scanWebsite(input: EngineInput): Promise<UrlScanResult> {
       }
 
       evidences.push(
-        ...findFromRegexPool(cookies, signature.cookiePatterns, "cookie", "set-cookie", 0.8)
+        ...findFromRegexPool(collected.cookies, signature.cookiePatterns, "cookie", "set-cookie", 0.8)
       );
 
       const status = computeStatus(evidences);
@@ -242,7 +421,7 @@ export async function scanWebsite(input: EngineInput): Promise<UrlScanResult> {
         );
 
         if (!alreadyIncluded) {
-          detections.push(detectSpecificFallback(target, html, scripts));
+          detections.push(detectSpecificFallback(target, detectionSource, collected.scripts));
         }
       }
     }
@@ -265,7 +444,5 @@ export async function scanWebsite(input: EngineInput): Promise<UrlScanResult> {
       finishedAt: new Date().toISOString(),
       detections: []
     };
-  } finally {
-    clearTimeout(timeoutHandle);
   }
 }

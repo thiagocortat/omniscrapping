@@ -14,6 +14,7 @@ MVP baseado no PRD para detectar tecnologias de websites com modo amplo e modo e
 - Upload CSV (primeira coluna)
 - Modo `Detectar tudo`
 - Modo `Detectar tecnologia especifica`
+- Estrategia de scan `static` (HTML) ou `browser` (Playwright)
 - Score de confianca por evidencia
 - Fila assíncrona com workers concorrentes
 - Retry automático com backoff para falhas transitórias
@@ -25,6 +26,7 @@ MVP baseado no PRD para detectar tecnologias de websites com modo amplo e modo e
 ## Como rodar
 ```bash
 npm install
+npx playwright install chromium
 npm run dev
 npm run worker:scan
 ```
@@ -40,6 +42,7 @@ Configure `REDIS_URL` no ambiente para API e worker.
 - URLs privadas/locais sao bloqueadas por seguranca (SSRF guard).
 - Limite de 1000 URLs por job.
 - Cada URL possui tentativas automáticas (resiliência em lote).
+- O modo `browser` executa JavaScript real e captura sinais de runtime (mais preciso, com maior custo de CPU/RAM).
 - Para produção em Vercel, execute o worker em processo separado (Railway/Render/Fly/VPS) apontando para o mesmo `REDIS_URL`.
 
 ## Deploy em VPS com Docker Compose
@@ -49,6 +52,11 @@ Pré-requisitos:
 Subir stack completa (web + worker + redis):
 ```bash
 docker compose up -d --build
+```
+
+Rodar local com porta publicada no host (`localhost:3000`):
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 ```
 
 Ver logs:
@@ -62,3 +70,7 @@ docker compose down
 ```
 
 A aplicação ficará em `http://IP_DA_VPS:3000`.
+
+Notas de ambiente:
+- `docker-compose.yml` (base) usa `expose` para evitar conflito de porta em ambientes com proxy (Dokploy).
+- `docker-compose.local.yml` publica `3000:3000` apenas para desenvolvimento local.

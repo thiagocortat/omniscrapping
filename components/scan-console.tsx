@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { ChangeEvent } from "react";
-import type { AnalysisMode, ScanItem, ScanJob } from "@/lib/types";
+import type { AnalysisMode, ScanItem, ScanJob, ScanStrategy } from "@/lib/types";
 import { StatusPill } from "@/components/status-pill";
 
 type InputMode = "single" | "batch" | "file";
@@ -130,6 +130,7 @@ export function ScanConsole() {
   const [csvRows, setCsvRows] = useState<string[][]>([]);
   const [selectedCsvColumnIndex, setSelectedCsvColumnIndex] = useState(0);
   const [mode, setMode] = useState<AnalysisMode>("all");
+  const [scanStrategy, setScanStrategy] = useState<ScanStrategy>("static");
   const [targetsText, setTargetsText] = useState("RD Station");
   const [job, setJob] = useState<ScanJob | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
@@ -250,6 +251,7 @@ export function ScanConsole() {
       const payload = {
         urls,
         mode,
+        scanStrategy,
         targets: mode === "specific" ? targets : []
       };
 
@@ -342,6 +344,33 @@ export function ScanConsole() {
                 {option === "single" ? "URL única" : option === "batch" ? "Lista" : "CSV"}
               </button>
             ))}
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-ink/10 bg-white/80 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted">Estratégia de scan</p>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                className={`rounded-xl px-3 py-2 text-sm font-semibold transition ${
+                  scanStrategy === "static" ? "bg-panel text-slate-50" : "bg-slate-100 text-ink hover:bg-slate-200"
+                }`}
+                onClick={() => setScanStrategy("static")}
+              >
+                Estático
+              </button>
+              <button
+                type="button"
+                className={`rounded-xl px-3 py-2 text-sm font-semibold transition ${
+                  scanStrategy === "browser" ? "bg-panel text-slate-50" : "bg-slate-100 text-ink hover:bg-slate-200"
+                }`}
+                onClick={() => setScanStrategy("browser")}
+              >
+                Browser (Playwright)
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-muted">
+              Browser executa JavaScript e captura sinais em runtime, porém é mais lento e consome mais recursos.
+            </p>
           </div>
 
           <div className="mt-4 space-y-3">
