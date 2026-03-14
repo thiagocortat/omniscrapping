@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ChangeEvent } from "react";
 import type { AnalysisMode, ScanItem, ScanJob, ScanStrategy } from "@/lib/types";
 import { StatusPill } from "@/components/status-pill";
+import { getFriendlyScanItemError } from "@/lib/scan-errors";
 
 type InputMode = "single" | "batch" | "file";
 type CsvDelimiter = "," | ";";
@@ -143,6 +144,13 @@ export function ScanConsole() {
     }
     return job.items.find((item) => item.id === selectedItemId);
   }, [job, selectedItemId]);
+
+  const selectedItemFriendlyError = useMemo(() => {
+    if (!selectedItem) {
+      return "";
+    }
+    return getFriendlyScanItemError(selectedItem);
+  }, [selectedItem]);
 
   useEffect(() => {
     if (
@@ -599,7 +607,9 @@ export function ScanConsole() {
                           <StatusPill status={item.status} />
                         </td>
                         <td className="px-3 py-2 text-xs text-muted">
-                          {item.status === "running" || item.status === "pending"
+                          {item.status === "failed"
+                            ? getFriendlyScanItemError(item)
+                            : item.status === "running" || item.status === "pending"
                             ? `tentativa ${item.attempts}/${item.maxAttempts}`
                             : `${item.result?.detections.filter((d) => d.status !== "not_found").length ?? 0} detectadas`}
                         </td>
@@ -618,8 +628,8 @@ export function ScanConsole() {
           <h3 className="text-lg font-bold text-ink">Detalhes da URL</h3>
           <p className="mt-1 font-mono text-xs text-muted">{selectedItem.normalizedUrl}</p>
 
-          {selectedItem.error && (
-            <p className="mt-3 rounded-lg bg-rose-100 px-3 py-2 text-sm text-rose-700">{selectedItem.error}</p>
+          {selectedItemFriendlyError && (
+            <p className="mt-3 rounded-lg bg-rose-100 px-3 py-2 text-sm text-rose-700">{selectedItemFriendlyError}</p>
           )}
 
           {(selectedItem.status === "running" || selectedItem.status === "pending") && (
@@ -654,7 +664,7 @@ export function ScanConsole() {
               </article>
             ))}
 
-            {(selectedItem.result?.detections ?? []).length === 0 && !selectedItem.error && (
+            {(selectedItem.result?.detections ?? []).length === 0 && !selectedItemFriendlyError && (
               <div className="rounded-2xl border border-dashed border-ink/20 p-5 text-sm text-muted">
                 Nenhuma tecnologia identificada para esta URL.
               </div>

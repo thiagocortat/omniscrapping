@@ -1,6 +1,65 @@
 import { NextResponse } from "next/server";
 import { getJob } from "@/lib/job-store";
 import { csvEscape } from "@/lib/utils";
+import { getFriendlyScanItemError } from "@/lib/scan-errors";
+import type { DetectionResult, DetectionStatus, ScanStatus } from "@/lib/types";
+
+function toScanStatusLabel(status: ScanStatus): string {
+  switch (status) {
+    case "completed":
+      return "concluido";
+    case "failed":
+      return "falhou";
+    case "running":
+      return "em_andamento";
+    case "pending":
+      return "pendente";
+    default:
+      return status;
+  }
+}
+
+function toDetectionStatusLabel(status: DetectionStatus): string {
+  switch (status) {
+    case "found":
+      return "encontrado";
+    case "not_found":
+      return "nao_encontrado";
+    case "inconclusive":
+      return "inconclusivo";
+    default:
+      return status;
+  }
+}
+
+function normalizeKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isDetectionForTarget(detection: DetectionResult, target: string): boolean {
+  const detectionKey = normalizeKey(detection.technology);
+  const targetKey = normalizeKey(target);
+  return detectionKey.includes(targetKey) || targetKey.includes(detectionKey);
+}
+
+function buildTargetResults(targets: string[], detections: DetectionResult[]): string {
+  if (!targets.length) {
+    return "";
+  }
+
+  return targets
+    .map((target) => {
+      const targetDetections = detections.filter((detection) => isDetectionForTarget(detection, target));
+
+      if (!targetDetections.length) {
+        return `${target}: nao_encontrado`;
+      }
+
+      const best = [...targetDetections].sort((a, b) => b.confidence - a.confidence)[0];
+      return `${target}: ${toDetectionStatusLabel(best.status)} (${best.confidence}%)`;
+    })
+    .join(" | ");
+}
 
 export async function GET(
   request: Request,
@@ -25,39 +84,52 @@ export async function GET(
 
     const header = [
       "url",
-      "status",
-      "tecnologias",
-      "detalhes",
+      "status_scan",
+      "modo",
+      "alvos",
+      "resultado_alvos",
+      "tecnologias_detectadas",
+      "detalhes_deteccao",
       "confianca_media",
-      "erro",
+      "erro_resumido",
       "data_analise"
     ];
 
     const rows = job.items.map((item) => {
       const detections = item.result?.detections ?? [];
-      const technologies = detections
-        .filter((detection) => detection.status !== "not_found")
+      const positiveDetections = detections.filter((detection) => detection.status !== "not_found");
+
+      const technologies = positiveDetections
         .map((detection) => detection.technology)
         .join(" | ");
 
-      const details = detections
-        .map((detection) => `${detection.technology} (${detection.status} - ${detection.confidence}%)`)
+      const details = positiveDetections
+        .map(
+          (detection) =>
+            `${detection.technology} (${toDetectionStatusLabel(detection.status)} - ${detection.confidence}%): ${detection.summary}`
+        )
         .join(" | ");
 
-      const confidenceAverage = detections.length
+      const confidenceAverage = positiveDetections.length
         ? Math.round(
-            detections.reduce((acc, detection) => acc + detection.confidence, 0) /
-              detections.length
+            positiveDetections.reduce((acc, detection) => acc + detection.confidence, 0) /
+              positiveDetections.length
           )
         : 0;
 
+      const friendlyError = getFriendlyScanItemError(item);
+      const targetResults = job.mode === "specific" ? buildTargetResults(job.targets, detections) : "";
+
       return [
         item.normalizedUrl,
-        item.status,
+        toScanStatusLabel(item.status),
+        job.mode,
+        job.targets.join(" | "),
+        targetResults,
         technologies,
         details,
         confidenceAverage,
-        item.error ?? "",
+        friendlyError,
         item.finishedAt ?? ""
       ];
     });
