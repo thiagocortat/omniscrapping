@@ -10,6 +10,7 @@ const QUEUE_NAMES: Record<ScanStrategy, string> = {
 };
 const MAX_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 1500;
+const RUNNING_ITEM_STALE_MS = Number(process.env.SCAN_RUNNING_ITEM_STALE_MS ?? 10 * 60 * 1000);
 
 const RETRYABLE_ERROR_PATTERNS = [
   /timed? ?out/i,
@@ -153,6 +154,59 @@ function parseIntSafe(value: string | null | undefined): number {
   }
   const parsed = Number.parseInt(value, 10);
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function isRunningItemStale(item: ScanItem, nowMs: number): boolean {
+  if (item.status !== "running" || !item.startedAt) {
+    return false;
+  }
+
+  const startedAtMs = Date.parse(item.startedAt);
+  if (Number.isNaN(startedAtMs)) {
+    return false;
+  }
+
+  return nowMs - startedAtMs > RUNNING_ITEM_STALE_MS;
+}
+
+async function recoverStaleRunningItems(
+  scanId: string,
+  meta: ScanMeta,
+  items: ScanItem[]
+): Promise<{ meta: ScanMeta; items: ScanItem[]; changed: boolean }> {
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  let changed = false;
+
+  for (const item of items) {
+    if (!isRunningItemStale(item, nowMs)) {
+      continue;
+    }
+
+    item.status = "failed";
+    item.finishedAt = nowIso;
+    item.nextRetryAt = undefined;
+    item.error =
+      "Execucao interrompida por timeout interno do worker. Reprocesse este item para tentar novamente.";
+    await writeItem(scanId, item);
+    changed = true;
+  }
+
+  if (!changed) {
+    return { meta, items, changed: false };
+  }
+
+  const recalculatedCounts = recalculateCountsFromItems(items);
+  const updatedMeta: ScanMeta = {
+    ...meta,
+    counts: recalculatedCounts,
+    total: Math.max(meta.total, items.length),
+    updatedAt: nowIso
+  };
+  updatedMeta.status = deriveStatus(updatedMeta);
+  await writeMeta(updatedMeta);
+
+  return { meta: updatedMeta, items, changed: true };
 }
 
 async function readMeta(scanId: string): Promise<ScanMeta | undefined> {
@@ -482,21 +536,24 @@ export async function getJob(jobId: string): Promise<ScanJob | undefined> {
   }
 
   const items = await readItems(jobId);
-  const recalculatedCounts = recalculateCountsFromItems(items);
+  const recovered = await recoverStaleRunningItems(jobId, meta, items);
+  const effectiveItems = recovered.items;
+  const metaAfterRecovery = recovered.meta;
+  const recalculatedCounts = recalculateCountsFromItems(effectiveItems);
   const effectiveMeta: ScanMeta = {
-    ...meta,
-    total: Math.max(meta.total, items.length),
+    ...metaAfterRecovery,
+    total: Math.max(metaAfterRecovery.total, effectiveItems.length),
     counts: recalculatedCounts
   };
   effectiveMeta.status = deriveStatus(effectiveMeta);
 
   // Sincroniza contadores recalculados para reduzir drift após concorrência alta.
   if (
-    meta.counts.pending !== recalculatedCounts.pending ||
-    meta.counts.running !== recalculatedCounts.running ||
-    meta.counts.completed !== recalculatedCounts.completed ||
-    meta.counts.failed !== recalculatedCounts.failed ||
-    meta.status !== effectiveMeta.status
+    metaAfterRecovery.counts.pending !== recalculatedCounts.pending ||
+    metaAfterRecovery.counts.running !== recalculatedCounts.running ||
+    metaAfterRecovery.counts.completed !== recalculatedCounts.completed ||
+    metaAfterRecovery.counts.failed !== recalculatedCounts.failed ||
+    metaAfterRecovery.status !== effectiveMeta.status
   ) {
     effectiveMeta.updatedAt = new Date().toISOString();
     await writeMeta(effectiveMeta);
@@ -512,7 +569,7 @@ export async function getJob(jobId: string): Promise<ScanJob | undefined> {
     status: effectiveMeta.status,
     total: effectiveMeta.total,
     counts: effectiveMeta.counts,
-    items
+    items: effectiveItems
   };
 }
 

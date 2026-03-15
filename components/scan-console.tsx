@@ -126,7 +126,6 @@ export function ScanConsole() {
   const [inputMode, setInputMode] = useState<InputMode>("single");
   const [singleUrl, setSingleUrl] = useState("");
   const [urlsText, setUrlsText] = useState("");
-  const [fileUrls, setFileUrls] = useState<string[]>([]);
   const [csvColumns, setCsvColumns] = useState<string[]>([]);
   const [csvRows, setCsvRows] = useState<string[][]>([]);
   const [selectedCsvColumnIndex, setSelectedCsvColumnIndex] = useState(0);
@@ -189,20 +188,14 @@ export function ScanConsole() {
 
   const targets = useMemo(() => splitByLine(targetsText), [targetsText]);
   const csvPreviewRows = useMemo(() => csvRows.slice(0, 5), [csvRows]);
-
-  useEffect(() => {
-    if (!csvRows.length) {
-      setFileUrls([]);
-      return;
-    }
-
-    const extracted = csvRows
-      .map((row) => (row[selectedCsvColumnIndex] ?? "").trim())
-      .filter(Boolean)
-      .filter((value) => !isUrlColumnLabel(value));
-
-    setFileUrls(extracted);
-  }, [csvRows, selectedCsvColumnIndex]);
+  const fileUrls = useMemo(
+    () =>
+      csvRows
+        .map((row) => (row[selectedCsvColumnIndex] ?? "").trim())
+        .filter(Boolean)
+        .filter((value) => !isUrlColumnLabel(value)),
+    [csvRows, selectedCsvColumnIndex]
+  );
 
   async function handleFileUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -213,7 +206,6 @@ export function ScanConsole() {
     if (!file.name.toLowerCase().endsWith(".csv")) {
       setCsvColumns([]);
       setCsvRows([]);
-      setFileUrls([]);
       setError("No MVP atual, apenas upload CSV está habilitado.");
       return;
     }
@@ -223,7 +215,6 @@ export function ScanConsole() {
     if (!parsed.rows.length || !parsed.columns.length) {
       setCsvColumns([]);
       setCsvRows([]);
-      setFileUrls([]);
       setError("CSV vazio ou sem linhas válidas para leitura.");
       return;
     }
