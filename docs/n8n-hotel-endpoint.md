@@ -38,6 +38,21 @@ Exemplo de configuração no ambiente da aplicação:
 N8N_HOTEL_API_KEY=minha-chave-super-segura
 ```
 
+Se o deploy usa Docker Compose, a variável também precisa ser repassada no serviço `web`.
+
+Exemplo:
+```yaml
+web:
+  environment:
+    REDIS_URL: redis://redis:6379
+    START_WORKER_IN_WEB: "false"
+    SCAN_WORKER_CONCURRENCY: "8"
+    PORT: "3000"
+    N8N_HOTEL_API_KEY: ${N8N_HOTEL_API_KEY}
+```
+
+Sem esse mapeamento, a variável pode existir na plataforma de deploy, mas não entrar no container que responde a API.
+
 ## Headers obrigatórios
 ```http
 content-type: application/json

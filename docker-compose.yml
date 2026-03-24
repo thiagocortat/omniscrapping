@@ -26,6 +26,7 @@ services:
       START_WORKER_IN_WEB: "false"
       SCAN_WORKER_CONCURRENCY: "8"
       PORT: "3000"
+      N8N_HOTEL_API_KEY: ${N8N_HOTEL_API_KEY}
     expose:
       - "3000"
     command: ["npm", "run", "start"]
