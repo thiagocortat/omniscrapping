@@ -12,6 +12,7 @@ MVP baseado no PRD para detectar tecnologias de websites com modo amplo e modo e
 - Analise por URL unica
 - Analise em lote (lista manual)
 - Upload CSV (primeira coluna)
+- Endpoint síncrono para integração n8n na análise de hotel
 - Modo `Detectar tudo`
 - Modo `Detectar tecnologia especifica`
 - Estrategia de scan `static` (HTML) ou `browser` (Playwright)
@@ -34,6 +35,65 @@ npm run worker:scan
 Acesse `http://localhost:3000`.
 
 Configure `REDIS_URL` no ambiente para API e worker.
+Para a integração n8n do scanner de hotel, configure também `N8N_HOTEL_API_KEY`.
+
+## Endpoint n8n para hotel
+Endpoint:
+```bash
+POST /api/integrations/n8n/hotel/analyze
+```
+
+Headers:
+```bash
+x-api-key: $N8N_HOTEL_API_KEY
+content-type: application/json
+```
+
+Payload:
+```json
+{
+  "url": "https://hotel-exemplo.com.br",
+  "requestId": "lead-123",
+  "options": {
+    "includeEvidence": false
+  }
+}
+```
+
+Resposta de sucesso:
+```json
+{
+  "requestId": "lead-123",
+  "status": "completed",
+  "result": {
+    "url": "https://hotel-exemplo.com.br",
+    "normalizedUrl": "https://hotel-exemplo.com.br",
+    "finishedAt": "2026-03-24T12:00:00.000Z",
+    "pagesVisited": [],
+    "performance": {},
+    "seo": {},
+    "technologies": [],
+    "booking": {},
+    "summary": {}
+  },
+  "meta": {
+    "durationMs": 1820,
+    "includeEvidence": false
+  }
+}
+```
+
+Resposta de erro:
+```json
+{
+  "requestId": "lead-123",
+  "status": "failed",
+  "error": {
+    "code": "INVALID_URL",
+    "message": "URL inválida ou bloqueada pela política de segurança."
+  }
+}
+```
 
 ## Observacoes do MVP
 - Jobs e resultados ficam em Redis (sem dependência de banco relacional).
